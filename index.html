@@ -541,13 +541,19 @@
   // player last opened them.
   let unseen = { map: false, journal: false, decorate: false };
 
-  // Onboarding: a 3-step sequence of coach marks shown once ever, tied to
+  // Onboarding: a 4-step sequence of coach marks shown once ever, tied to
   // real first-time actions rather than a click-through tutorial.
   // onboardingStep: 0 = inactive, 1 = "tap the teapot", 2 = "tap leaves to
-  // brew", 3 = "explore the nav" (auto-fades). `onboarded` persists so it
-  // never shows again once the sequence has played out.
+  // brew", 3 = "tap the herb box", 4 = "explore the nav" (auto-fades).
+  // `onboarded` persists so it never shows again once the sequence has
+  // played out. `herbBoxHintPending` bridges the gap between finishing the
+  // first brew and the chips actually closing - the herb box only gathers
+  // leaves once brewing mode is closed (a tap while it's open just closes
+  // it), so step 3 can't appear until that's true or the hint would be
+  // wrong on the very first tap.
   let onboarded = false;
   let onboardingStep = 0;
+  let herbBoxHintPending = false;
 
   const RARE_LEAVES_PER_BLEND_TIER1 = 3;
   const RARE_LEAVES_PER_LOCATION_UNLOCK = 8;
@@ -729,7 +735,8 @@
   const COACH_STEPS = {
     1: { text: "Tap the teapot to brew your first cup", top: "20%" },
     2: { text: "Tap leaves to add them, then ✓ to brew", top: "16%" },
-    3: { text: "Explore Map, Journal, and Decorate to grow your shop", bottom: "84px" }
+    3: { text: "The herb box on the left always has free Mint & Chamomile", top: "36%" },
+    4: { text: "Explore Map, Journal, and Decorate to grow your shop", bottom: "84px" }
   };
 
   function renderCoachBubble() {
@@ -752,16 +759,39 @@
     renderCoachBubble();
   }
 
+  // Confirming the first brew doesn't show step 3 directly - the chips stay
+  // open after a successful brew (you can keep re-brewing), and tapping the
+  // herb box while they're open just closes them instead of gathering. So
+  // this only arms a flag; closeBrewingMode() is what actually shows step 3,
+  // once the herb box would really respond to a tap.
+  function armHerbBoxHint() {
+    if (onboardingStep !== 2) return;
+    onboardingStep = 0;
+    herbBoxHintPending = true;
+    renderCoachBubble();
+  }
+
+  function showHerbBoxHintIfPending() {
+    if (!herbBoxHintPending) return;
+    herbBoxHintPending = false;
+    onboardingStep = 3;
+    renderCoachBubble();
+    // fallback in case the player never taps the herb box - don't leave the
+    // sequence stuck on step 3 forever
+    setTimeout(() => {
+      if (onboardingStep === 3) advanceOnboardingToStep4();
+    }, 6000);
+  }
+
   // The final step counts as "onboarded" the moment it appears, not only
   // once it fades - otherwise a reload during that few-second window would
-  // restart the whole sequence from step 1.
-  function advanceOnboardingToStep3() {
-    if (onboardingStep !== 2) return;
-    onboardingStep = 3;
+  // restart the whole sequence from an earlier step.
+  function advanceOnboardingToStep4() {
+    onboardingStep = 4;
     onboarded = true;
     renderCoachBubble();
     setTimeout(() => {
-      if (onboardingStep === 3) {
+      if (onboardingStep === 4) {
         onboardingStep = 0;
         renderCoachBubble();
       }
@@ -1633,8 +1663,13 @@
 
   function toggleOverlay(name) {
     closeBrewingMode(); // opening a panel steps away from the scene - exit brewing first
-    if (onboardingStep === 3) {
+    // Heading into a tab on your own already satisfies "explore the nav" -
+    // no need to keep nagging about the herb box specifically once you're
+    // clearly exploring past it yourself.
+    if (onboardingStep === 3 || onboardingStep === 4) {
       onboardingStep = 0;
+      onboarded = true;
+      herbBoxHintPending = false;
       renderCoachBubble();
     }
     activeOverlay = (activeOverlay === name) ? null : name;
@@ -1737,6 +1772,11 @@
   // value, rather than manually resetting each one and risking drift.
   function confirmResetGame() {
     if (!confirm("Reset all shop progress? This can't be undone.")) return;
+    // location.reload() below triggers its own "beforeunload", which would
+    // otherwise fire the autosave listener and write the current
+    // (pre-reset) state right back into the storage key we're about to
+    // clear - remove it first so the reset actually sticks.
+    window.removeEventListener("beforeunload", saveState);
     try { localStorage.removeItem(SAVE_KEY); } catch (err) {}
     location.reload();
   }
@@ -1855,6 +1895,7 @@
     if (!brewingActive) return;
     brewingActive = false;
     renderBrewChips();
+    showHerbBoxHintIfPending();
   }
   window.closeBrewingMode = closeBrewingMode;
 
@@ -1948,7 +1989,7 @@
       return;
     }
     brew(recipes.indexOf(match));
-    advanceOnboardingToStep3();
+    armHerbBoxHint();
     triggerFlash("teapotGroup", 200, 370); // steam-puff on the actual teapot, right behind the chips
     brewSelection = {};
     renderBrewChips();
@@ -1975,6 +2016,7 @@
       renderAll();
       triggerFlash("herbBoxGroup", 80, 465);
       showToast(`+${FORAGE_AMOUNT} Mint, +${FORAGE_AMOUNT} Chamomile`);
+      if (onboardingStep === 3) advanceOnboardingToStep4();
     });
   }
   window.tapHerbBox = tapHerbBox;
