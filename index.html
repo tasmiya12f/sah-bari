@@ -90,6 +90,13 @@
   .pantry-popover { position: absolute; top: 98px; left: 16px; z-index: 6; display: flex; flex-wrap: wrap; gap: 6px; width: 168px; background: #fffdf9; border: 2px solid var(--chrome-dark); border-radius: 16px; padding: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.22); }
   .pantry-popover.hidden { display: none; }
 
+  /* ---- onboarding coach mark: a single reusable floating bubble that
+     points at whatever the next first-time action is, gently bobbing to
+     draw the eye. Never blocks taps on the thing it's pointing at. ---- */
+  .coach-bubble { position: absolute; left: 50%; transform: translateX(-50%); z-index: 25; background: #fff7e6; color: var(--chrome-dark); border: 2px solid var(--chrome-dark); border-radius: 16px; padding: 10px 16px; font-size: 13px; font-weight: 700; text-align: center; max-width: 78%; box-shadow: 0 4px 10px rgba(0,0,0,0.22); pointer-events: none; animation: coachBubbleFloat 1.6s ease-in-out infinite; }
+  .coach-bubble.hidden { display: none; }
+  @keyframes coachBubbleFloat { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-4px); } }
+
   /* ---- ambient music toggle, top-left: off by default (browsers block
      audio until a tap anyway), dims when off, full color when playing ---- */
   .music-toggle-floating { position: absolute; top: 16px; left: 16px; z-index: 5; width: 34px; height: 34px; border-radius: 50%; background: #fffdf9; border: 2px solid var(--chrome-dark); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 2px 6px rgba(0,0,0,0.18); }
@@ -331,6 +338,9 @@
   <button class="title-screen-reset" onclick="confirmResetGame()">Reset Shop</button>
 </div>
 
+<!-- ---------------- onboarding coach mark: points at the next thing to try, shown once ever ---------------- -->
+<div class="coach-bubble hidden" id="coachBubble"></div>
+
 <!-- ---------------- FULL-BLEED SCENE: fills the app frame ---------------- -->
 <div class="scene-fullbleed" id="scene" onclick="handleSceneBackgroundClick()"></div>
 
@@ -531,6 +541,14 @@
   // player last opened them.
   let unseen = { map: false, journal: false, decorate: false };
 
+  // Onboarding: a 3-step sequence of coach marks shown once ever, tied to
+  // real first-time actions rather than a click-through tutorial.
+  // onboardingStep: 0 = inactive, 1 = "tap the teapot", 2 = "tap leaves to
+  // brew", 3 = "explore the nav" (auto-fades). `onboarded` persists so it
+  // never shows again once the sequence has played out.
+  let onboarded = false;
+  let onboardingStep = 0;
+
   const RARE_LEAVES_PER_BLEND_TIER1 = 3;
   const RARE_LEAVES_PER_LOCATION_UNLOCK = 8;
 
@@ -707,6 +725,48 @@
     showToast(leafLabel(key));
   }
   window.explainLeaf = explainLeaf;
+
+  const COACH_STEPS = {
+    1: { text: "Tap the teapot to brew your first cup", top: "20%" },
+    2: { text: "Tap leaves to add them, then ✓ to brew", top: "16%" },
+    3: { text: "Explore Map, Journal, and Decorate to grow your shop", bottom: "84px" }
+  };
+
+  function renderCoachBubble() {
+    const el = document.getElementById("coachBubble");
+    const step = COACH_STEPS[onboardingStep];
+    if (!step) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    el.classList.remove("hidden");
+    el.style.top = step.top || "";
+    el.style.bottom = step.bottom || "";
+    el.innerHTML = step.text;
+  }
+
+  function advanceOnboardingToStep2() {
+    if (onboardingStep !== 1) return;
+    onboardingStep = 2;
+    renderCoachBubble();
+  }
+
+  // The final step counts as "onboarded" the moment it appears, not only
+  // once it fades - otherwise a reload during that few-second window would
+  // restart the whole sequence from step 1.
+  function advanceOnboardingToStep3() {
+    if (onboardingStep !== 2) return;
+    onboardingStep = 3;
+    onboarded = true;
+    renderCoachBubble();
+    setTimeout(() => {
+      if (onboardingStep === 3) {
+        onboardingStep = 0;
+        renderCoachBubble();
+      }
+    }, 5000);
+  }
 
   // ---- Town Map: a wider illustrated world than fits on screen - the
   // player scrolls it horizontally, discovering locations along the path.
@@ -1573,6 +1633,10 @@
 
   function toggleOverlay(name) {
     closeBrewingMode(); // opening a panel steps away from the scene - exit brewing first
+    if (onboardingStep === 3) {
+      onboardingStep = 0;
+      renderCoachBubble();
+    }
     activeOverlay = (activeOverlay === name) ? null : name;
     if (activeOverlay && unseen[activeOverlay] !== undefined) {
       unseen[activeOverlay] = false;
@@ -1590,6 +1654,10 @@
   function closeTitleScreen() {
     document.getElementById("titleScreen").classList.add("hidden");
     playMusicIfEnabled();
+    if (!onboarded && onboardingStep === 0) {
+      onboardingStep = 1;
+      renderCoachBubble();
+    }
   }
   window.closeTitleScreen = closeTitleScreen;
 
@@ -1610,7 +1678,8 @@
       locationsUnlocked: Object.fromEntries(LOCATIONS.map(l => [l.name, l.unlocked])),
       cosmeticsOwned: Object.fromEntries(COSMETICS.map(c => [c.name, c.owned])),
       warmthDecorOwned: Object.fromEntries(WARMTH_DECOR.map(d => [d.name, d.owned])),
-      unseen: { ...unseen }
+      unseen: { ...unseen },
+      onboarded
     };
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -1654,6 +1723,13 @@
       });
     }
     if (data.unseen) Object.assign(unseen, data.unseen);
+    if (typeof data.onboarded === "boolean") {
+      onboarded = data.onboarded;
+    } else if (recipes.some(r => r.count > 0)) {
+      // save predates onboarding, but they've clearly already brewed
+      // before - don't show a first-timer tutorial to a returning player
+      onboarded = true;
+    }
   }
 
   // Wipes the save and reloads - simplest way to guarantee every piece of
@@ -1771,6 +1847,7 @@
     brewingActive = true;
     triggerFlash("teapotGroup", 200, 370);
     renderBrewChips();
+    advanceOnboardingToStep2();
   }
   window.tapTeapot = tapTeapot;
 
@@ -1871,6 +1948,7 @@
       return;
     }
     brew(recipes.indexOf(match));
+    advanceOnboardingToStep3();
     triggerFlash("teapotGroup", 200, 370); // steam-puff on the actual teapot, right behind the chips
     brewSelection = {};
     renderBrewChips();
