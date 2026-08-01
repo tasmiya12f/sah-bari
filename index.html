@@ -91,9 +91,21 @@
   .pantry-popover.hidden { display: none; }
 
   /* ---- onboarding coach mark: a single reusable floating bubble that
-     points at whatever the next first-time action is, gently bobbing to
-     draw the eye. Never blocks taps on the thing it's pointing at. ---- */
-  .coach-bubble { position: absolute; left: 50%; transform: translateX(-50%); z-index: 25; background: #fff7e6; color: var(--chrome-dark); border: 2px solid var(--chrome-dark); border-radius: 16px; padding: 10px 16px; font-size: 13px; font-weight: 700; text-align: center; max-width: 78%; box-shadow: 0 4px 10px rgba(0,0,0,0.22); pointer-events: none; animation: coachBubbleFloat 1.6s ease-in-out infinite; }
+     points at whatever the next step is, gently bobbing to draw the eye.
+     Steps 1-2 are pass-through (pointer-events: none) since they're tied to
+     a real required action, not a tap-to-dismiss; steps 3+ add
+     .dismissible, which makes the bubble itself tappable to advance.
+     width: max-content (not just max-width) matters here - without it, a
+     bubble positioned near the frame's right edge (like the Decorate nav
+     icon) shrink-to-fits into whatever sliver of space is left between its
+     `left` and the frame's edge, wrapping into a tall narrow column instead
+     of its normal width. A small triangle tail (like .map-callout's) makes
+     clear which icon each bubble is actually pointing at. ---- */
+  .coach-bubble { position: absolute; left: 50%; transform: translateX(-50%); z-index: 25; background: #fff7e6; color: var(--chrome-dark); border: 2px solid var(--chrome-dark); border-radius: 16px; padding: 10px 16px; font-size: 13px; font-weight: 700; text-align: center; width: max-content; max-width: 78%; box-shadow: 0 4px 10px rgba(0,0,0,0.22); pointer-events: none; animation: coachBubbleFloat 1.6s ease-in-out infinite; }
+  .coach-bubble::before, .coach-bubble::after { content: ""; position: absolute; left: var(--tail-x, 50%); transform: translateX(-50%); border-style: solid; }
+  .coach-bubble::before { bottom: -10px; border-width: 10px 10px 0 10px; border-color: var(--chrome-dark) transparent transparent transparent; }
+  .coach-bubble::after { bottom: -7px; border-width: 8px 8px 0 8px; border-color: #fff7e6 transparent transparent transparent; }
+  .coach-bubble.dismissible { pointer-events: auto; cursor: pointer; }
   .coach-bubble.hidden { display: none; }
   @keyframes coachBubbleFloat { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-4px); } }
 
@@ -110,7 +122,7 @@
 
   /* ---- toast notifications: brief, auto-fading, top-center ---- */
   #toastContainer { position: absolute; top: 16px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; z-index: 30; pointer-events: none; }
-  .toast { background: rgba(0,0,0,0.75); color: #fff; padding: 8px 16px; border-radius: 999px; font-size: 0.85em; font-weight: 600; opacity: 0; transform: translateY(-10px); transition: opacity 0.3s ease, transform 0.3s ease; max-width: 82%; text-align: center; }
+  .toast { background: rgba(0,0,0,0.75); color: #fff; padding: 8px 16px; border-radius: 999px; font-size: 0.85em; font-weight: 600; opacity: 0; transform: translateY(-10px); transition: opacity 0.3s ease, transform 0.3s ease; max-width: 82%; text-align: center; pointer-events: auto; cursor: pointer; }
   .toast.show { opacity: 1; transform: translateY(0); }
 
   /* ---- solid bottom nav bar: sage-green chrome, icon-only circular
@@ -339,7 +351,7 @@
 </div>
 
 <!-- ---------------- onboarding coach mark: points at the next thing to try, shown once ever ---------------- -->
-<div class="coach-bubble hidden" id="coachBubble"></div>
+<div class="coach-bubble hidden" id="coachBubble" onclick="advanceCoachSequence()"></div>
 
 <!-- ---------------- FULL-BLEED SCENE: fills the app frame ---------------- -->
 <div class="scene-fullbleed" id="scene" onclick="handleSceneBackgroundClick()"></div>
@@ -541,19 +553,15 @@
   // player last opened them.
   let unseen = { map: false, journal: false, decorate: false };
 
-  // Onboarding: a 4-step sequence of coach marks shown once ever, tied to
-  // real first-time actions rather than a click-through tutorial.
-  // onboardingStep: 0 = inactive, 1 = "tap the teapot", 2 = "tap leaves to
-  // brew", 3 = "tap the herb box", 4 = "explore the nav" (auto-fades).
-  // `onboarded` persists so it never shows again once the sequence has
-  // played out. `herbBoxHintPending` bridges the gap between finishing the
-  // first brew and the chips actually closing - the herb box only gathers
-  // leaves once brewing mode is closed (a tap while it's open just closes
-  // it), so step 3 can't appear until that's true or the hint would be
-  // wrong on the very first tap.
+  // Onboarding: a 6-step sequence of coach marks shown once ever.
+  // onboardingStep: 0=inactive, 1=teapot, 2=chips, 3=herb box, 4=Map,
+  // 5=Journal, 6=Decorate. Steps 1-2 are tied to real actions (tap the
+  // teapot; confirm a brew) - they can't be skipped by tapping around.
+  // Steps 3-6 are plain dismissible bubbles: tapping the bubble itself, or
+  // anywhere outside it, advances to the next one. `onboarded` persists so
+  // the whole sequence never shows again once it's played out once.
   let onboarded = false;
   let onboardingStep = 0;
-  let herbBoxHintPending = false;
 
   const RARE_LEAVES_PER_BLEND_TIER1 = 3;
   const RARE_LEAVES_PER_LOCATION_UNLOCK = 8;
@@ -687,10 +695,15 @@
     toast.textContent = message;
     container.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add("show"));
-    setTimeout(() => {
+    const dismiss = () => {
       toast.classList.remove("show");
       setTimeout(() => toast.remove(), 400);
-    }, 3000);
+    };
+    const autoTimer = setTimeout(dismiss, 3000);
+    toast.addEventListener("click", () => {
+      clearTimeout(autoTimer);
+      dismiss();
+    });
   }
 
   const CURRENCY_INFO = {
@@ -735,22 +748,91 @@
   const COACH_STEPS = {
     1: { text: "Tap the teapot to brew your first cup", top: "20%" },
     2: { text: "Tap leaves to add them, then ✓ to brew", top: "16%" },
-    3: { text: "The herb box on the left always has free Mint & Chamomile", top: "36%" },
-    4: { text: "Explore Map, Journal, and Decorate to grow your shop", bottom: "84px" }
+    3: { text: "The herb box on the left always has free Mint & Chamomile", top: "36%", targetEl: "herbBoxGroup", dismissible: true },
+    4: { text: "Unlock new locations here to forage rarer leaves", navTab: "map", dismissible: true },
+    5: { text: "See your recipes and track mastery progress here", navTab: "journal", dismissible: true },
+    6: { text: "Spend Warmth and Rare Leaves to furnish your shop here", navTab: "decorate", dismissible: true }
   };
+
+  // Shared positioning core: centers the bubble horizontally on a target's
+  // real pixel position, clamped so the box itself always stays fully
+  // on-screen (a target near an edge - the Decorate icon, the herb box off
+  // to the left - would otherwise push part of the box off-frame), with the
+  // tail pointed at the target's true position independently, so it still
+  // reads clearly even when the box had to shift to stay on-screen.
+  function positionBubbleAt(targetCenterX, verticalStyle) {
+    const el = document.getElementById("coachBubble");
+    const frame = document.querySelector(".app-frame");
+    if (!frame) return;
+    const frameRect = frame.getBoundingClientRect();
+
+    el.style.top = verticalStyle.top || "";
+    el.style.bottom = verticalStyle.bottom || "";
+    el.style.left = targetCenterX + "px"; // render once at the target's center so we can measure the box's real width
+    el.style.setProperty("--tail-x", "50%");
+
+    const margin = 12;
+    const halfBox = el.getBoundingClientRect().width / 2;
+    const minCenter = margin + halfBox;
+    const maxCenter = frameRect.width - margin - halfBox;
+    const clampedCenter = Math.min(Math.max(targetCenterX, minCenter), maxCenter);
+    el.style.left = clampedCenter + "px";
+
+    const tailX = targetCenterX - (clampedCenter - halfBox);
+    const tailMargin = 14;
+    const clampedTailX = Math.min(Math.max(tailX, tailMargin), halfBox * 2 - tailMargin);
+    el.style.setProperty("--tail-x", clampedTailX + "px");
+  }
+
+  // Positions the bubble directly above a specific bottom-nav icon, in real
+  // pixels rather than the scene's percentage system - the nav bar is a
+  // fixed-height HTML overlay, not part of the scaling SVG scene.
+  function positionBubbleOverNavTab(tabName) {
+    const btn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`);
+    const frame = document.querySelector(".app-frame");
+    if (!btn || !frame) return;
+    const btnRect = btn.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const iconCenterX = btnRect.left + btnRect.width / 2 - frameRect.left;
+    positionBubbleAt(iconCenterX, { bottom: (frameRect.bottom - btnRect.top + 12) + "px" });
+  }
+
+  // Positions the bubble horizontally over a specific element in the scene
+  // (e.g. the herb box), keeping the step's own vertical placement - the
+  // scene is SVG-scaled, so this reads the element's real rendered
+  // position rather than assuming it sits at a fixed percentage.
+  function positionBubbleOverElement(elementId, topStyle) {
+    const target = document.getElementById(elementId);
+    const frame = document.querySelector(".app-frame");
+    if (!target || !frame) return;
+    const targetRect = target.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const targetCenterX = targetRect.left + targetRect.width / 2 - frameRect.left;
+    positionBubbleAt(targetCenterX, { top: topStyle });
+  }
 
   function renderCoachBubble() {
     const el = document.getElementById("coachBubble");
     const step = COACH_STEPS[onboardingStep];
     if (!step) {
       el.classList.add("hidden");
+      el.classList.remove("dismissible");
       el.innerHTML = "";
       return;
     }
     el.classList.remove("hidden");
-    el.style.top = step.top || "";
-    el.style.bottom = step.bottom || "";
+    el.classList.toggle("dismissible", !!step.dismissible);
     el.innerHTML = step.text;
+    if (step.navTab) {
+      positionBubbleOverNavTab(step.navTab);
+    } else if (step.targetEl) {
+      positionBubbleOverElement(step.targetEl, step.top);
+    } else {
+      el.style.left = "50%";
+      el.style.top = step.top || "";
+      el.style.bottom = "";
+      el.style.setProperty("--tail-x", "50%");
+    }
   }
 
   function advanceOnboardingToStep2() {
@@ -759,44 +841,17 @@
     renderCoachBubble();
   }
 
-  // Confirming the first brew doesn't show step 3 directly - the chips stay
-  // open after a successful brew (you can keep re-brewing), and tapping the
-  // herb box while they're open just closes them instead of gathering. So
-  // this only arms a flag; closeBrewingMode() is what actually shows step 3,
-  // once the herb box would really respond to a tap.
-  function armHerbBoxHint() {
-    if (onboardingStep !== 2) return;
-    onboardingStep = 0;
-    herbBoxHintPending = true;
+  // Any tap on a dismissible bubble, or anywhere outside it, moves on to
+  // the next step in the sequence - steps 1-2 aren't dismissible this way,
+  // since they're tied to actually doing the thing, not just tapping past it.
+  function advanceCoachSequence() {
+    const step = COACH_STEPS[onboardingStep];
+    if (!step || !step.dismissible) return;
+    onboardingStep = COACH_STEPS[onboardingStep + 1] ? onboardingStep + 1 : 0;
+    if (onboardingStep === 0) onboarded = true;
     renderCoachBubble();
   }
-
-  function showHerbBoxHintIfPending() {
-    if (!herbBoxHintPending) return;
-    herbBoxHintPending = false;
-    onboardingStep = 3;
-    renderCoachBubble();
-    // fallback in case the player never taps the herb box - don't leave the
-    // sequence stuck on step 3 forever
-    setTimeout(() => {
-      if (onboardingStep === 3) advanceOnboardingToStep4();
-    }, 6000);
-  }
-
-  // The final step counts as "onboarded" the moment it appears, not only
-  // once it fades - otherwise a reload during that few-second window would
-  // restart the whole sequence from an earlier step.
-  function advanceOnboardingToStep4() {
-    onboardingStep = 4;
-    onboarded = true;
-    renderCoachBubble();
-    setTimeout(() => {
-      if (onboardingStep === 4) {
-        onboardingStep = 0;
-        renderCoachBubble();
-      }
-    }, 5000);
-  }
+  window.advanceCoachSequence = advanceCoachSequence;
 
   // ---- Town Map: a wider illustrated world than fits on screen - the
   // player scrolls it horizontally, discovering locations along the path.
@@ -1663,15 +1718,9 @@
 
   function toggleOverlay(name) {
     closeBrewingMode(); // opening a panel steps away from the scene - exit brewing first
-    // Heading into a tab on your own already satisfies "explore the nav" -
-    // no need to keep nagging about the herb box specifically once you're
-    // clearly exploring past it yourself.
-    if (onboardingStep === 3 || onboardingStep === 4) {
-      onboardingStep = 0;
-      onboarded = true;
-      herbBoxHintPending = false;
-      renderCoachBubble();
-    }
+    // Tapping the actual nav icon a bubble is pointing at (Map/Journal/
+    // Decorate) is itself a valid way to dismiss that bubble and move on.
+    advanceCoachSequence();
     activeOverlay = (activeOverlay === name) ? null : name;
     if (activeOverlay && unseen[activeOverlay] !== undefined) {
       unseen[activeOverlay] = false;
@@ -1895,16 +1944,17 @@
     if (!brewingActive) return;
     brewingActive = false;
     renderBrewChips();
-    showHerbBoxHintIfPending();
   }
   window.closeBrewingMode = closeBrewingMode;
 
   // Tapping anywhere in the scene that isn't a brew chip, the confirm
   // chip, or the teapot itself closes the floating chips - the same "tap
   // outside to dismiss" idea the overlay panels use, just without a
-  // backdrop since brewing never leaves the scene.
+  // backdrop since brewing never leaves the scene. Also doubles as the
+  // "tap outside" dismissal for any active dismissible coach bubble.
   function handleSceneBackgroundClick() {
     if (brewingActive) closeBrewingMode();
+    advanceCoachSequence();
     closePantryPopover();
   }
   window.handleSceneBackgroundClick = handleSceneBackgroundClick;
@@ -1989,10 +2039,18 @@
       return;
     }
     brew(recipes.indexOf(match));
-    armHerbBoxHint();
     triggerFlash("teapotGroup", 200, 370); // steam-puff on the actual teapot, right behind the chips
     brewSelection = {};
+    // This first-ever confirm also closes the chip panel outright, purely
+    // for the onboarding moment - normally it stays open so repeat brews
+    // don't need the teapot re-tapped each time, but here the very next
+    // beat (the herb-box hint) needs the panel out of the way first.
+    if (onboardingStep === 2) {
+      brewingActive = false;
+      onboardingStep = 3;
+    }
     renderBrewChips();
+    renderCoachBubble();
   }
   window.confirmBrew = confirmBrew;
 
@@ -2016,7 +2074,9 @@
       renderAll();
       triggerFlash("herbBoxGroup", 80, 465);
       showToast(`+${FORAGE_AMOUNT} Mint, +${FORAGE_AMOUNT} Chamomile`);
-      if (onboardingStep === 3) advanceOnboardingToStep4();
+      // Actually gathering is itself a valid way to dismiss the step 3
+      // hint, same as tapping the bubble or tapping elsewhere.
+      advanceCoachSequence();
     });
   }
   window.tapHerbBox = tapHerbBox;
